@@ -217,6 +217,70 @@ def handle_match_action(call):
         # Here you can record the like/match in your supabase 'matches' table and check if it's mutual!
         # For now, let's prompt them to find another or simulate a match connection.
         bot.send_message(call.message.chat.id, "✨ Match request saved! Send /match to keep browsing.")
+
+import requests
+import base64
+from datetime import datetime
+
+# --- M-PESA DARAJA / INTASEND PAYMENT INTEGRATION ---
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("like_"))
+def handle_like_action(call):
+    telegram_id = call.from_user.id
+    target_profile_id = call.data.split("_")[1]
+    
+    bot.answer_callback_query(call.id, "Profile liked!")
+    
+    # Prompt user for M-Pesa number to pay the Ksh. 5 unlock fee
+    update_user_state(telegram_id, "AWAITING_MPESA_PHONE", {"target_match_id": target_profile_id})
+    
+    markup = types.ForceReply(selective=True)
+    bot.send_message(
+        call.message.chat.id, 
+        "✨ **It's a potential match!**\n\nTo unlock direct group chat and reveal this contact, a small verification fee of **Ksh. 5** applies.\n\nPlease enter your M-Pesa phone number (e.g., `0712345678`):",
+        reply_markup=markup,
+        parse_mode="Markdown"
+    )
+
+@bot.message_handler(func=lambda msg: get_user_profile(msg.from_user.id).get('state') == 'AWAITING_MPESA_PHONE')
+def process_mpesa_phone(message):
+    telegram_id = message.from_user.id
+    phone_number = message.text.strip()
+    
+    # Format phone number for Kenya (e.g., convert 0712... to 254712...)
+    if phone_number.startswith("0"):
+        phone_number = "254" + phone_number[1:]
+    elif phone_number.startswith("+"):
+        phone_number = phone_number.replace("+", "")
+        
+    profile = get_user_profile(telegram_id)
+    
+    # Record payment request in Supabase
+    payment_record = {
+        "profile_id": profile['id'],
+        "phone_number": phone_number,
+        "amount": 5.00,
+        "status": "pending"
+    }
+    res = supabase.table("payments").insert(payment_record).execute()
+    payment_id = res.data[0]['id']
+    
+    # Trigger M-Pesa STK Push (Example structure using IntaSend or Daraja API)
+    # You can swap this block with your actual IntaSend / Daraja API credentials
+    bot.send_message(
+        message.chat.id, 
+        "📲 **STK Push Sent!**\n\nCheck your phone (`" + phone_number + "`) and enter your M-Pesa PIN to pay **Ksh. 5**."
+    )
+    
+    # Simulate payment success for MVP testing (or connect your webhook callback here)
+    # Once paid, update profile to is_paid = true and create the match connection
+    supabase.table("profiles").update({"is_paid": True, "state": "IDLE"}).eq("telegram_id", telegram_id).execute()
+    supabase.table("payments").update({"status": "success"}).eq("id", payment_id).execute()
+    
+    bot.send_message(
+        message.chat.id, 
+        "✅ **Payment Successful!**\n\n🎉 Unlocked! Here is your match connection. You can now chat directly or start your group conversation!"
+    )
 # --- RUN BOT ---
 if __name__ == "__main__":
     print("Bot is polling...")
