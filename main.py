@@ -147,7 +147,76 @@ def process_photo(message):
         message.chat.id, 
         "🎉 **Profile Setup Complete!**\n\nYour profile is now active. Send /match to start finding people near you!"
     )
+# --- MATCHING & DISCOVERY FLOW ---
 
+@bot.message_handler(commands=['match'])
+def handle_match(message):
+    telegram_id = message.from_user.id
+    profile = get_user_profile(telegram_id)
+    
+    if not profile.get('lat') or not profile.get('lon'):
+        bot.send_message(message.chat.id, "⚠️ Please complete your profile setup and share your location first using /start.")
+        return
+
+    # Call Supabase RPC function 'get_nearby_matches'
+    try:
+        response = supabase.rpc(
+            "get_nearby_matches", 
+            {"current_profile_id": profile['id'], "max_distance_km": 50}
+        ).execute()
+        
+        matches = response.data
+        if not matches:
+            bot.send_message(message.chat.id, "😔 No active matches found nearby right now. Try again later!")
+            return
+            
+        # Get the closest match (first item in sorted distance)
+        match = matches[0]
+        
+        # Save current browsing target in user state or session if needed
+        # Format the profile card text
+        card_text = (
+            f"💘 **Match Found!**\n\n"
+            f"👤 **{match['full_name']}**, {match['age']}\n"
+            f"📍 Distance: **{match['distance_km']} km away**\n"
+            f"🎯 Purpose: Looking for connection\n\n"
+            f"💬 Bio: {match['bio'] or 'No bio provided.'}"
+        )
+        
+        # Inline buttons for action
+        markup = types.InlineKeyboardMarkup()
+        markup.add(
+            types.InlineKeyboardButton("❤️ Like", callback_data=f"like_{match['id']}"),
+            types.InlineKeyboardButton("⏭️ Skip", callback_data="skip_match")
+        )
+        
+        # Send profile photo if available, otherwise text
+        if match.get('photo_file_id'):
+            bot.send_photo(message.chat.id, match['photo_file_id'], caption=card_text, reply_markup=markup, parse_mode="Markdown")
+        else:
+            bot.send_message(message.chat.id, card_text, reply_markup=markup, parse_mode="Markdown")
+            
+    except Exception as e:
+        print(f"Error fetching matches: {e}")
+        bot.send_message(message.chat.id, "⚠️ An error occurred while searching for matches. Please try again.")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("like_") or call.data == "skip_match")
+def handle_match_action(call):
+    telegram_id = call.from_user.id
+    
+    if call.data == "skip_match":
+        bot.answer_callback_query(call.id, "Skipped!")
+        bot.edit_message_caption("⏭️ Profile skipped. Send /match to see the next person.", call.message.chat.id, call.message.message_id)
+        return
+        
+    if call.data.startswith("like_"):
+        target_profile_id = call.data.split("_")[1]
+        bot.answer_callback_query(call.id, "You liked this profile!")
+        bot.edit_message_caption("❤️ Liked! Looking for mutual matches...", call.message.chat.id, call.message.message_id)
+        
+        # Here you can record the like/match in your supabase 'matches' table and check if it's mutual!
+        # For now, let's prompt them to find another or simulate a match connection.
+        bot.send_message(call.message.chat.id, "✨ Match request saved! Send /match to keep browsing.")
 # --- RUN BOT ---
 if __name__ == "__main__":
     print("Bot is polling...")
